@@ -7,9 +7,6 @@ from dwave.system import LeapHybridSampler
 from collections import Counter
 
 
-###############################
-# HELPER FUNCTIONS            #
-###############################
 
 def sanitize_tweet(tweet: str):
     tweet = tweet.replace('.', '').replace(',', '').replace('@', '')
@@ -41,31 +38,27 @@ def decode_weight(sample, j, num_bits=2):
     return val
 
 
-###############################
-# DATA LOADING                #
-###############################
+# DATA LOADING
 
-max_data = 500
-max_vocab_size = 100
+max_data = 150
+max_vocab_size = 40
 
 tweets = []
 labels = []
-with open("twitter_training.csv", "r") as f:
+with open("custom_training.csv", "r") as f:
     reader = csv.reader(f)
     next(reader)  # skip header row
     for row in reader:
-        sentiment = row[2].strip()  # Expected to be 'Positive', 'Negative', or 'Neutral'
+        sentiment = row[1].strip()  # Expected to be 'Positive', 'Negative', or 'Neutral'
         if sentiment not in ['Positive', 'Negative', 'Neutral']:
             continue
-        tweets.append(sanitize_tweet(row[3]))
+        tweets.append(sanitize_tweet(row[2]))
         labels.append(sentiment)
         if len(tweets) >= max_data:
             break
 print("Loaded {} tweets.".format(len(tweets)))
 
-###############################
-# VOCABULARY CONSTRUCTION     #
-###############################
+# VOCABULARY CONSTRUCTION
 
 word_counts = Counter()
 for tweet in tweets:
@@ -77,19 +70,13 @@ vocab.sort()  # sort for consistency
 num_features = len(vocab)
 print("Vocabulary size:", num_features)
 
-###############################
-# FEATURE MATRIX              #
-###############################
 
 X = np.array([tweet_to_vector(tw, vocab) for tw in tweets], dtype=int)
 num_samples = len(X)
 
-###############################
-# BUILD QUBO (WITH 2-BIT WEIGHTS)
-###############################
 
-lambda_reg = 0.01
-num_bits_per_weight = 2
+lambda_reg = 0.001  # small effect
+num_bits_per_weight = 4
 
 
 def build_qubo(X, binary_labels, num_features, lambda_reg, num_bits=3):
@@ -120,9 +107,7 @@ def build_qubo(X, binary_labels, num_features, lambda_reg, num_bits=3):
         y = binary_labels[i]
         xi = X[i]
 
-        # -------------------------------------
         # 1) Linear term from -2*y*( sum_j W_j*xi[j] + b )
-        # -------------------------------------
         for j in range(num_features):
             # Each weight W_j = sum_{bit} 2^bit * w_{j}_bit{bit}
             for bit_j in range(num_bits):
@@ -133,10 +118,8 @@ def build_qubo(X, binary_labels, num_features, lambda_reg, num_bits=3):
         # bias linear term: -2*y*b
         add_to_Q('b', 'b', -2.0 * y)
 
-        # -------------------------------------
         # 2) Quadratic term from ( sum_j W_j*xi[j] + b )^2
         #    = sum_{j,k} W_j * W_k * xi[j]*xi[k] + 2*b*(sum_j W_j*xi[j]) + b^2
-        # -------------------------------------
 
         # 2a) Weight-weight cross terms: sum_{j,k} (W_j* W_k * x_i[j]* x_i[k])
         # Expanding W_j * W_k means sum_{bits_j} sum_{bits_k} (2^bit_j)*(2^bit_k)* w_{j}_bit{bit_j} * w_{k}_bit{bit_k}
@@ -161,10 +144,7 @@ def build_qubo(X, binary_labels, num_features, lambda_reg, num_bits=3):
         # For each sample, we add +1 to b,b
         add_to_Q('b', 'b', 1.0)
 
-    # -------------------------------------
     # 3) Regularization: lambda_reg * sum_j( W_j ),
-    #    or you can distribute it across each bit to discourage turning bits on.
-    # -------------------------------------
     for j in range(num_features):
         for bit_j in range(num_bits):
             var_j_bit = w_bit_name(j, bit_j)
@@ -174,9 +154,6 @@ def build_qubo(X, binary_labels, num_features, lambda_reg, num_bits=3):
     return Q
 
 
-###############################
-# ONE-VS-REST MULTICLASS      #
-###############################
 
 sentiment_classes = ['Positive', 'Neutral', 'Negative']
 classifiers = {}
@@ -192,7 +169,7 @@ for sentiment in sentiment_classes:
 
     print(f"QUBO for {sentiment} has {len(Q)} terms. Solving...")
     # Increase time_limit if needed
-    sampleset = sampler.sample(bqm, time_limit=15)
+    sampleset = sampler.sample(bqm, time_limit=30)
     if len(sampleset) == 0:
         raise ValueError(f"No samples returned for classifier {sentiment}")
 
@@ -221,21 +198,19 @@ def predict_tweet(tweet, vocab, classifiers):
     return predicted, scores
 
 
-###############################
-# EVALUATION                  #
-###############################
+# TESTING
 
-max_testing_data = 500
+max_testing_data = 150
 testing_tweets = []
 testing_labels = []
-with open("twitter_validation.csv", "r") as f:
+with open("custom_testing.csv", "r") as f:
     reader = csv.reader(f)
     next(reader)  # skip header row
     for row in reader:
-        sentiment = row[2].strip()
+        sentiment = row[1].strip()
         if sentiment not in ['Positive', 'Negative', 'Neutral']:
             continue
-        tw = sanitize_tweet(row[3])
+        tw = sanitize_tweet(row[2])
         testing_tweets.append(tw)
         testing_labels.append(sentiment)
         if len(testing_tweets) >= max_testing_data:
